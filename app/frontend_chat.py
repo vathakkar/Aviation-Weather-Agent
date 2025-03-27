@@ -1,34 +1,68 @@
 import streamlit as st
 from streamlit_chat import message
-from dotenv import load_dotenv
-import os
 import openai
+import os
+from dotenv import load_dotenv
 import json
 
 from metar_fetcher import fetch_metar
+from taf_fetcher import get_taf
 from metar_interpreter import interpret_metar
+from taf_interpreter import interpret_taf
+from full_brief import get_full_brief
 
 # Load environment variables
 load_dotenv()
-openai.api_key = os.getenv("OPENAI_API_KEY")
-client = openai.OpenAI()
+client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-st.set_page_config(page_title="Aviation Weather Agent", page_icon="🛫")
-st.title("🛫 Aviation Weather Agent")
+# Streamlit UI setup
+st.set_page_config(page_title="Aviation Weather Co-Pilot", page_icon="🛫")
+st.title("🧠 Aviation Weather Co-Pilot")
+st.markdown("Chat with me about aviation weather! I can fetch and interpret METARs and TAFs, and give you full weather briefings.")
 
-# Define GPT tools
-tools = [
+# Initialize session history
+if "messages" not in st.session_state:
+    st.session_state.messages = [
+        {
+            "role": "system",
+            "content": "You are a helpful aviation weather assistant. You can fetch and interpret METARs, TAFs, and give full flight briefings."
+        },
+        {
+            "role": "assistant",
+            "content": "👋 Hi! I'm your Aviation Weather Co-Pilot. Ask me for METARs, TAFs, or full briefings. Try something like:\n\n• What's the weather at KSFO?\n• Interpret this METAR: ...\n• Give me a full brief for KSEA"
+        }
+    ]
+
+# Tools for GPT-4 Function Calling
+functions = [
     {
         "type": "function",
         "function": {
             "name": "fetch_metar",
-            "description": "Fetch the raw METAR report from an ICAO airport code",
+            "description": "Fetch the latest METAR report from an ICAO airport code.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "icao": {
                         "type": "string",
-                        "description": "4-letter ICAO airport code (e.g., KSEA)"
+                        "description": "The ICAO code (e.g. KSEA)"
+                    }
+                },
+                "required": ["icao"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_taf",
+            "description": "Fetch the latest TAF forecast from an ICAO airport code.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "icao": {
+                        "type": "string",
+                        "description": "The ICAO code (e.g. KSFO)"
                     }
                 },
                 "required": ["icao"]
@@ -39,7 +73,7 @@ tools = [
         "type": "function",
         "function": {
             "name": "interpret_metar",
-            "description": "Interpret the raw METAR into plain English",
+            "description": "Interpret a raw METAR weather report in plain English.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -51,44 +85,67 @@ tools = [
                 "required": ["metar"]
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "interpret_taf",
+            "description": "Interpret a raw TAF forecast in plain English.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "taf": {
+                        "type": "string",
+                        "description": "Raw TAF string"
+                    }
+                },
+                "required": ["taf"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_full_brief",
+            "description": "Generate a full weather briefing (METAR + TAF + interpretation) for an airport.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "icao": {
+                        "type": "string",
+                        "description": "The ICAO code (e.g. KLAX)"
+                    }
+                },
+                "required": ["icao"]
+            }
+        }
     }
 ]
 
-# ✅ Initialize chat memory and welcome message
-if "messages" not in st.session_state:
-    st.session_state.messages = [
-        {"role": "system", "content": "You are an aviation weather assistant that uses tools to fetch and explain METAR reports."},
-        {"role": "assistant", "content": "👋 Hi there! I’m your Aviation Weather Assistant.\n\nYou can ask me things like:\n• 'What’s the weather at KSEA?'\n• 'Show me the METAR for KLAX'\n• 'Can I fly from JFK right now?'\n\nJust enter an ICAO code or ask a question to get started!"}
-    ]
-
 # Show chat history
 for i, msg in enumerate(st.session_state.messages):
-    if msg["role"] != "system":
+    # Only render messages that have a 'content' key
+    if "content" in msg:
         message(msg["content"], is_user=(msg["role"] == "user"), key=f"msg-{i}")
 
-# Get user input
-user_input = st.chat_input("Ask about airport weather or METAR...")
 
+# Handle user input
+user_input = st.chat_input("Type your aviation weather question here...")
 if user_input:
-    # ✅ Show user message immediately
     st.session_state.messages.append({"role": "user", "content": user_input})
-    message(user_input, is_user=True, key=f"user-msg-{len(st.session_state.messages)}")
+    message(user_input, is_user=True, key=f"user-{len(st.session_state.messages)}")
 
-    # ⏳ Show spinner while GPT processes
-    with st.spinner("🤖 Thinking..."):
-
-        # GPT initial response (might include tool call)
+    with st.spinner("🛫 Getting the latest data..."):
         response = client.chat.completions.create(
             model="gpt-3.5-turbo-1106",
             messages=st.session_state.messages,
-            tools=tools,
+            tools=functions,
             tool_choice="auto"
         )
 
         reply = response.choices[0].message
 
         if reply.tool_calls:
-            # ✅ Save assistant message with tool calls
             st.session_state.messages.append({
                 "role": "assistant",
                 "content": reply.content,
@@ -97,39 +154,33 @@ if user_input:
 
             for tool_call in reply.tool_calls:
                 func_name = tool_call.function.name
-                arguments = json.loads(tool_call.function.arguments)
-                tool_call_id = tool_call.id
+                args = json.loads(tool_call.function.arguments)
 
                 if func_name == "fetch_metar":
-                    result = fetch_metar(arguments["icao"])
+                    result = fetch_metar(**args)
+                elif func_name == "get_taf":
+                    result = get_taf(**args)
                 elif func_name == "interpret_metar":
-                    result = interpret_metar(arguments["metar"])
+                    result = interpret_metar(**args)
+                elif func_name == "interpret_taf":
+                    result = interpret_taf(**args)
+                elif func_name == "get_full_brief":
+                    result = get_full_brief(**args)
                 else:
-                    result = f"⚠️ Unknown tool: {func_name}"
+                    result = f"❌ Unknown tool: {func_name}"
 
                 st.session_state.messages.append({
                     "role": "tool",
-                    "tool_call_id": tool_call_id,
+                    "tool_call_id": tool_call.id,
                     "content": result
                 })
 
-            # GPT continues with tool output
+            # Final GPT response after tool output
             followup = client.chat.completions.create(
                 model="gpt-3.5-turbo-1106",
                 messages=st.session_state.messages
             )
+            reply = followup.choices[0].message
 
-            final_reply = followup.choices[0].message
-            st.session_state.messages.append({
-                "role": "assistant",
-                "content": final_reply.content
-            })
-            message(final_reply.content, key=f"final-{len(st.session_state.messages)}")
-
-        else:
-            # No tool used, just assistant reply
-            st.session_state.messages.append({
-                "role": "assistant",
-                "content": reply.content
-            })
-            message(reply.content, key=f"final-{len(st.session_state.messages)}")
+        st.session_state.messages.append(reply)
+        message(reply.content, is_user=False, key=f"final-{len(st.session_state.messages)}")

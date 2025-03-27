@@ -2,11 +2,11 @@
 
 import os
 from dotenv import load_dotenv
-#from app.taf_fetcher import get_taf
-from app.notam_fetcher import get_notam
+from app.taf_fetcher import get_taf
+#from app.notam_fetcher import get_notam
 
 load_dotenv()
 
-icao = "KSEA"
-taf = get_notam(icao)
+icao = "KRNT"
+taf = get_taf(icao)
 print(taf)
