@@ -19,9 +19,9 @@ METAR: {metar_text}
 4. Ask the user about their personal minimums and advise if this is safe to fly.
 """
 
-    response = openai.ChatCompletion.create(
-        model="gpt-4o",
+    response = openai.chat.completions.create(
+        model="gpt-4o-mini",
         messages=[{"role": "user", "content": prompt}]
     )
 
-    return response.choices[0].message["content"]
+    return response.choices[0].message.content

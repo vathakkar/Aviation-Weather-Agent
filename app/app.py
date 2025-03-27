@@ -1,5 +1,6 @@
 # app/app.py
 import traceback
+import json
 import os
 import openai
 from dotenv import load_dotenv
@@ -64,7 +65,18 @@ tool_map = {
 }
 
 def chat():
-    messages = [{"role": "system", "content": "You are an aviation weather assistant for pilots."}]
+    messages = [
+    {
+        "role": "system",
+        "content": (
+            "You are an aviation weather assistant for pilots. "
+            "If a user asks about the weather at an airport, you should first use the `fetch_metar_tool` "
+            "to get the latest METAR for their ICAO code. Print the METAR. Then use `interpret_metar_tool` to decode and explain the METAR. "
+            "Always call the tools before answering questions related to airport weather."
+        )
+    }
+]
+
     print("🛫 Aviation Weather Agent — Ask me anything (type 'exit' to quit)")
 
     while True:
@@ -74,8 +86,8 @@ def chat():
 
         messages.append({"role": "user", "content": user_input})
 
-        response = openai.ChatCompletion.create(
-            model="gpt-4o",
+        response = openai.chat.completions.create(
+            model="gpt-4o-mini",
             messages=messages,
             tools=tools,
             tool_choice="auto"
@@ -83,7 +95,7 @@ def chat():
 
         reply = response.choices[0].message
 
-        if reply.get("tool_calls"):
+        if reply.tool_calls:
             for tool_call in reply.tool_calls:
                 func_name = tool_call.function.name
                 args = eval(tool_call.function.arguments)
@@ -96,11 +108,11 @@ def chat():
                 })
 
                 # Rerun chat to integrate tool result
-                second_response = openai.ChatCompletion.create(
-                    model="gpt-4o",
+                second_response = openai.chat.completions.create(
+                    model="gpt-4o-mini",
                     messages=messages
                 )
-                final_message = second_response.choices[0].message["content"]
+                final_message = second_response.choices[0].message.content
                 print("\n🤖 AI:", final_message)
                 messages.append({"role": "assistant", "content": final_message})
 
