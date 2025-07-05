@@ -10,6 +10,7 @@ from metar_fetcher import fetch_metar
 from taf_fetcher import get_taf
 from metar_interpreter import interpret_metar
 from taf_interpreter import interpret_taf
+from notam_fetcher import get_notams
 from web_search import search_web
 
 # 🌍 Load environment
@@ -17,8 +18,17 @@ load_dotenv()
 client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # 📜 Load prompt
-with open("app/prompt.yaml", "r") as f:
-    prompt_data = yaml.safe_load(f)
+try:
+    # Try relative path first, then absolute
+    prompt_path = "app/prompt.yaml"
+    if not os.path.exists(prompt_path):
+        prompt_path = "prompt.yaml"
+    
+    with open(prompt_path, "r") as f:
+        prompt_data = yaml.safe_load(f)
+except Exception as e:
+    st.error(f"Failed to load prompt configuration: {e}")
+    prompt_data = {"system": "You are an aviation weather assistant."}
 
 # 🛫 Streamlit config
 st.set_page_config(page_title="Aviation Weather & Flight Co-Pilot", page_icon="🛩️")
@@ -99,6 +109,20 @@ functions = [
     {
         "type": "function",
         "function": {
+            "name": "get_notams",
+            "description": "Get NOTAMs for a given ICAO airport code.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "icao": {"type": "string", "description": "The ICAO code (e.g. KORD)"}
+                },
+                "required": ["icao"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "search_web",
             "description": "Search the web for recent aviation updates, news, or regulations.",
             "parameters": {
@@ -131,50 +155,61 @@ if user_input:
     message(user_input, is_user=True, key=f"user-{len(st.session_state.messages)}")
 
     with st.spinner("🧠 Analyzing..."):
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=st.session_state.messages,
-            tools=functions,
-            tool_choice="auto"
-        )
+        try:
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=st.session_state.messages,
+                tools=functions,
+                tool_choice="auto"
+            )
 
-        reply = response.choices[0].message
+            reply = response.choices[0].message
 
-        if reply.tool_calls:
-            st.session_state.messages.append({
-                "role": "assistant",
-                "content": reply.content or "",
-                "tool_calls": [tc.model_dump() for tc in reply.tool_calls]
-            })
-
-            for tool_call in reply.tool_calls:
-                func_name = tool_call.function.name
-                args = json.loads(tool_call.function.arguments)
-
-                if func_name == "fetch_metar":
-                    result = fetch_metar(**args)
-                elif func_name == "get_taf":
-                    result = get_taf(**args)
-                elif func_name == "interpret_metar":
-                    result = interpret_metar(**args)
-                elif func_name == "interpret_taf":
-                    result = interpret_taf(**args)
-                elif func_name == "search_web":
-                    result = search_web(**args)
-                else:
-                    result = f"❌ Unknown tool: {func_name}"
-
+            if reply.tool_calls:
                 st.session_state.messages.append({
-                    "role": "tool",
-                    "tool_call_id": tool_call.id,
-                    "content": result
+                    "role": "assistant",
+                    "content": reply.content or "",
+                    "tool_calls": [tc.model_dump() for tc in reply.tool_calls]
                 })
 
-            followup = client.chat.completions.create(
-                model="gpt-3.5-turbo-1106",
-                messages=st.session_state.messages
-            )
-            reply = followup.choices[0].message
+                for tool_call in reply.tool_calls:
+                    func_name = tool_call.function.name
+                    args = json.loads(tool_call.function.arguments)
 
-        st.session_state.messages.append(reply)
-        message(reply.content, is_user=False, key=f"msg-{len(st.session_state.messages)}")
+                    try:
+                        if func_name == "fetch_metar":
+                            result = fetch_metar(**args)
+                        elif func_name == "get_taf":
+                            result = get_taf(**args)
+                        elif func_name == "interpret_metar":
+                            result = interpret_metar(**args)
+                        elif func_name == "interpret_taf":
+                            result = interpret_taf(**args)
+                        elif func_name == "get_notams":
+                            result = get_notams(**args)
+                        elif func_name == "search_web":
+                            result = search_web(**args)
+                        else:
+                            result = f"❌ Unknown tool: {func_name}"
+                    except Exception as e:
+                        result = f"❌ Error executing {func_name}: {str(e)}"
+
+                    st.session_state.messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "content": result
+                    })
+
+                followup = client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=st.session_state.messages
+                )
+                reply = followup.choices[0].message
+
+            st.session_state.messages.append(reply)
+            message(reply.content, is_user=False, key=f"msg-{len(st.session_state.messages)}")
+            
+        except Exception as e:
+            error_msg = f"❌ Error: {str(e)}"
+            st.error(error_msg)
+            st.session_state.messages.append({"role": "assistant", "content": error_msg})

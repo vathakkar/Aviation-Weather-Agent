@@ -133,6 +133,10 @@ import openai
 from dotenv import load_dotenv
 from metar_fetcher import fetch_metar
 from metar_interpreter import interpret_metar
+from taf_fetcher import get_taf
+from taf_interpreter import interpret_taf
+from notam_fetcher import get_notams
+from web_search import search_web
 
 load_dotenv()
 
@@ -142,6 +146,20 @@ functions = [
     {
         "name": "fetch_metar",
         "description": "Fetch the latest METAR report from an ICAO airport code.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "icao": {
+                    "type": "string",
+                    "description": "The ICAO code for the airport (e.g. KSEA, KSFO)"
+                }
+            },
+            "required": ["icao"]
+        }
+    },
+    {
+        "name": "get_taf",
+        "description": "Fetch the latest TAF forecast for an ICAO airport code.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -166,61 +184,127 @@ functions = [
             },
             "required": ["metar"]
         }
+    },
+    {
+        "name": "interpret_taf",
+        "description": "Interpret a raw TAF forecast into human-friendly flight conditions.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "taf": {
+                    "type": "string",
+                    "description": "The raw TAF string to interpret."
+                }
+            },
+            "required": ["taf"]
+        }
+    },
+    {
+        "name": "get_notams",
+        "description": "Get NOTAMs for an ICAO airport code.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "icao": {
+                    "type": "string",
+                    "description": "The ICAO code for the airport (e.g. KSEA, KSFO)"
+                }
+            },
+            "required": ["icao"]
+        }
+    },
+    {
+        "name": "search_web",
+        "description": "Search the web for aviation information.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "The search query."
+                }
+            },
+            "required": ["query"]
+        }
     }
 ]
 
 def chat():
     messages = [
-        {"role": "system", "content": "You are a helpful aviation weather assistant. You can fetch METAR reports and interpret them to tell pilots whether conditions are VFR or IFR, and what the winds and visibility are like."}
+        {"role": "system", "content": "You are a helpful aviation weather assistant. You can fetch METAR reports, TAF forecasts, NOTAMs, and interpret weather data to help pilots with flight planning and weather analysis."}
     ]
 
+    print("🛫 Aviation Weather Agent — Ask me anything (type 'exit' or 'quit' to quit)")
+
     while True:
-        user_input = input("\n🧑 You: ")
-        if user_input.lower() in ["exit", "quit"]:
-            break
+        try:
+            user_input = input("\n🧑 You: ")
+            if user_input.lower() in ["exit", "quit"]:
+                break
 
-        messages.append({"role": "user", "content": user_input})
+            messages.append({"role": "user", "content": user_input})
 
-        response = client.chat.completions.create(
-            model="gpt-3.5-turbo-1106",
-            messages=messages,
-            tools=functions,
-            tool_choice="auto"
-        )
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=messages,
+                tools=functions,
+                tool_choice="auto"
+            )
 
-        reply = response.choices[0].message
+            reply = response.choices[0].message
 
-        if reply.tool_calls:
-            for tool_call in reply.tool_calls:
-                func_name = tool_call.function.name
-                args = tool_call.function.arguments
+            if reply.tool_calls:
+                for tool_call in reply.tool_calls:
+                    func_name = tool_call.function.name
+                    args = tool_call.function.arguments
 
-                if func_name == "fetch_metar":
-                    from json import loads
-                    args = loads(args)
-                    result = fetch_metar(**args)
-                elif func_name == "interpret_metar":
-                    from json import loads
-                    args = loads(args)
-                    result = interpret_metar(**args)
-                else:
-                    result = f"❌ Unknown tool: {func_name}"
+                    try:
+                        from json import loads
+                        args = loads(args)
+                        
+                        if func_name == "fetch_metar":
+                            result = fetch_metar(**args)
+                        elif func_name == "get_taf":
+                            result = get_taf(**args)
+                        elif func_name == "interpret_metar":
+                            result = interpret_metar(**args)
+                        elif func_name == "interpret_taf":
+                            result = interpret_taf(**args)
+                        elif func_name == "get_notams":
+                            result = get_notams(**args)
+                        elif func_name == "search_web":
+                            result = search_web(**args)
+                        else:
+                            result = f"❌ Unknown tool: {func_name}"
+                    except Exception as e:
+                        result = f"❌ Error executing {func_name}: {str(e)}"
 
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tool_call.id,
-                    "content": result
-                })
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "content": result
+                    })
 
                 followup = client.chat.completions.create(
-                    model="gpt-3.5-turbo-1106",
+                    model="gpt-4o-mini",
                     messages=messages
                 )
 
                 reply = followup.choices[0].message
 
-        print(f"\n🤖 AI: {reply.content}")
-        messages.append(reply)
+            print(f"\n🤖 AI: {reply.content}")
+            messages.append(reply)
+            
+        except KeyboardInterrupt:
+            print("\n\n👋 Goodbye!")
+            break
+        except Exception as e:
+            print(f"\n❌ Error: {str(e)}")
+            print("Please try again or type 'exit' to quit.")
 
 if __name__ == "__main__":
-    chat()
+    try:
+        chat()
+    except Exception as e:
+        print(f"❌ Fatal error: {str(e)}")
+        print("Please check your API keys and internet connection.")
